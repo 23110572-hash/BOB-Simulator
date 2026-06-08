@@ -44,28 +44,8 @@ The simulator simulates bank actions (Sign in, Transfer, Add Payee, Profile Chan
 
 ---
 
-## Running Locally
+## Deployed Application
 
-To run this simulator locally, ensure you have Python 3.10+ installed:
+Once deployed on Vercel, the application is live at your custom Vercel domain, for example:
+- **URL**: [https://bob-simulator.vercel.app/](https://bob-simulator.vercel.app/)
 
-1. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. **Configure local environment**:
-   Create a `.env` file at the root of the repository:
-   ```env
-   DATABASE_URL=your_postgres_dsn
-   TRUSTIQ_URL=http://localhost:8000
-   TRUSTIQ_API_KEY=bob-trustiq-live-key-2026
-   GEMINI_API_KEY=your_gemini_api_key
-   ```
-
-3. **Start the app**:
-   ```bash
-   python -m uvicorn api.server:app --port 9100 --reload
-   ```
-
-4. **Open in browser**:
-   Navigate to `http://localhost:9100`.
