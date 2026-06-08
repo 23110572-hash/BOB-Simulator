@@ -148,11 +148,20 @@ function actionLabel(a){ return ({silent_pass:"Allowed",push_notification:"Phone
 function actionColor(a){ return ({silent_pass:"#1c8c5a",push_notification:"#c9821a",step_up_otp:"#d9683b",block:"#c0392b"})[a]||"#8a93a6"; }
 
 async function load(){
-  const r = await fetch(API + "/api/accounts");
-  const d = await r.json();
-  STATE.accounts = d.accounts; STATE.cities = d.cities; STATE.channels = d.channels;
-  renderAccounts();
-  loadFeed();
+  try {
+    const r = await fetch(API + "/api/accounts");
+    if (!r.ok) {
+      const e = await r.json();
+      showBanner(e.detail || "Failed to load accounts.");
+      return;
+    }
+    const d = await r.json();
+    STATE.accounts = d.accounts; STATE.cities = d.cities; STATE.channels = d.channels;
+    renderAccounts();
+    loadFeed();
+  } catch (e) {
+    showBanner("Failed to connect to the backend server. Please verify your environment variables.");
+  }
 }
 
 function renderAccounts(){
