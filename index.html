@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Bank of Baroda — Core Simulator</title>
+<style>
+  :root{
+    --bob-orange:#f37021; --bob-maroon:#7b1d1d; --ink:#1c2433; --muted:#69748a;
+    --line:#e6e9f0; --bg:#f4f6fb; --card:#ffffff; --ok:#1c8c5a; --warn:#c9821a;
+    --high:#d9683b; --crit:#c0392b; --shadow:0 1px 3px rgba(20,30,55,.08);
+  }
+  *{box-sizing:border-box} html,body{margin:0}
+  body{font-family:"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--ink);font-size:14px}
+  a{color:inherit}
+  header.topbar{display:flex;align-items:center;gap:14px;padding:12px 22px;background:linear-gradient(90deg,var(--bob-maroon),var(--bob-orange));color:#fff}
+  .logo{width:40px;height:40px;border-radius:10px;background:#fff;color:var(--bob-maroon);display:grid;place-items:center;font-weight:800;font-size:18px}
+  .topbar h1{font-size:17px;margin:0;font-weight:700}
+  .topbar .sub{font-size:12px;opacity:.9}
+  .topbar .right{margin-left:auto;display:flex;align-items:center;gap:14px;font-size:12px}
+  .status{display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.16);padding:5px 11px;border-radius:20px}
+  .dot{width:8px;height:8px;border-radius:50%;background:#9ad}
+  .dot.on{background:#7CFC9B} .dot.off{background:#ff8a8a}
+  .link{color:#fff;text-decoration:underline;cursor:pointer}
+  .wrap{display:grid;grid-template-columns:320px 1fr 360px;gap:16px;padding:16px;max-width:1500px;margin:0 auto}
+  @media(max-width:1200px){.wrap{grid-template-columns:1fr}}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+  .panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:0;padding:14px 16px;border-bottom:1px solid var(--line)}
+  .accts{max-height:78vh;overflow:auto}
+  .acct{display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);cursor:pointer}
+  .acct:hover{background:#fafbff}
+  .acct.sel{background:#fff4ec;border-left:3px solid var(--bob-orange)}
+  .avatar{width:38px;height:38px;border-radius:50%;background:#fde3d3;color:var(--bob-maroon);display:grid;place-items:center;font-weight:700;flex:none}
+  .acct .nm{font-weight:600} .acct .meta{font-size:12px;color:var(--muted)}
+  .acct .bal{margin-left:auto;text-align:right;font-weight:700;font-size:13px}
+  .acct .bal small{display:block;font-weight:500;color:var(--muted);font-size:11px}
+  .body{padding:16px}
+  .selhead{display:flex;align-items:center;gap:14px;margin-bottom:8px}
+  .selhead .big{font-size:20px;font-weight:700}
+  .balcard{background:linear-gradient(120deg,#7b1d1d,#b5341f);color:#fff;border-radius:12px;padding:16px 18px;margin:12px 0}
+  .balcard .lbl{font-size:12px;opacity:.85} .balcard .amt{font-size:28px;font-weight:800}
+  .balcard .acno{font-family:monospace;letter-spacing:1px;opacity:.9;margin-top:4px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  label.fl{display:block;font-size:12px;color:var(--muted);margin:0 0 5px}
+  select,input{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;font-size:14px;background:#fff;color:var(--ink)}
+  .field{margin-bottom:12px}
+  .actions{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px}
+  .chip{padding:7px 13px;border:1px solid var(--line);border-radius:20px;background:#fff;cursor:pointer;font-size:13px}
+  .chip.on{background:var(--bob-orange);color:#fff;border-color:var(--bob-orange)}
+  .toggles{display:flex;flex-wrap:wrap;gap:14px;margin:6px 0 12px;font-size:13px}
+  .tg{display:flex;align-items:center;gap:7px;cursor:pointer}
+  .run{width:100%;padding:12px;border:0;border-radius:10px;background:var(--bob-orange);color:#fff;font-size:15px;font-weight:700;cursor:pointer}
+  .run:disabled{opacity:.6;cursor:default}
+  .hint{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.5}
+  .verdict{margin-top:14px;border:1px solid var(--line);border-radius:12px;overflow:hidden;display:none}
+  .verdict.show{display:block}
+  .vtop{padding:12px 16px;color:#fff;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .vbadge{background:rgba(255,255,255,.22);padding:4px 11px;border-radius:20px;font-weight:700;font-size:13px}
+  .vmetrics{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line)}
+  .vmetric{background:#fff;padding:12px;text-align:center}
+  .vmetric .n{font-size:22px;font-weight:800} .vmetric .l{font-size:11px;color:var(--muted)}
+  .vnarr{padding:12px 16px;font-size:13px;line-height:1.55;border-top:1px solid var(--line)}
+  .vrec{padding:10px 16px;font-size:13px;background:#fafbff;border-top:1px solid var(--line)}
+  .act-feed{max-height:78vh;overflow:auto}
+  .feed-item{padding:11px 16px;border-bottom:1px solid var(--line);font-size:13px}
+  .feed-item .ln1{display:flex;align-items:center;gap:8px}
+  .feed-item .who{font-weight:600} .feed-item .msg{color:var(--muted);font-size:12px;margin-top:3px}
+  .tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:12px;color:#fff;margin-left:auto}
+  .t-safe{background:var(--ok)} .t-mid{background:var(--warn)} .t-high{background:var(--high)} .t-crit{background:var(--crit)} .t-neutral{background:#8a93a6}
+  .empty{padding:30px 16px;text-align:center;color:var(--muted);font-size:13px}
+  .banner{display:none;margin:10px 16px;padding:10px 14px;border-radius:8px;background:#fdecec;color:#a3271d;font-size:13px;border:1px solid #f3c0bb}
+  .banner.show{display:block}
+  /* AI verification modal */
+  .modal-overlay{display:none;position:fixed;inset:0;background:rgba(20,30,55,.55);z-index:100;align-items:center;justify-content:center;padding:20px}
+  .modal-overlay.show{display:flex}
+  .modal{background:#fff;border-radius:16px;width:100%;max-width:520px;box-shadow:0 24px 60px rgba(0,0,0,.3);overflow:hidden;animation:pop .18s ease}
+  @keyframes pop{from{transform:scale(.96);opacity:.6}to{transform:scale(1);opacity:1}}
+  .modal-top{background:var(--bob-gradient,linear-gradient(135deg,#7b1d1d,#f37021));color:#fff;padding:16px 20px;display:flex;align-items:center;gap:12px}
+  .modal-top .mt-ico{width:40px;height:40px;border-radius:10px;background:rgba(255,255,255,.18);display:grid;place-items:center;font-size:20px;flex:none}
+  .modal-top h3{margin:0;font-size:16px}
+  .modal-top .sub{font-size:12px;opacity:.9}
+  .ai-badge{margin-left:auto;font-size:11px;font-weight:700;background:rgba(255,255,255,.2);padding:4px 9px;border-radius:20px}
+  .modal-body{padding:18px 20px}
+  .modal-intro{font-size:13.5px;line-height:1.55;color:var(--ink);background:#fff6ef;border:1px solid #f6dcc6;border-radius:10px;padding:11px 13px;margin-bottom:16px}
+  .vq{margin-bottom:14px}
+  .vq label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
+  .vq input{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;font-size:14px}
+  .modal-foot{display:flex;gap:10px;padding:14px 20px;border-top:1px solid var(--line);background:#fafbff}
+  .modal-foot button{flex:1;padding:11px;border:0;border-radius:9px;font-size:14px;font-weight:700;cursor:pointer}
+  .mf-cancel{background:#eef1f7;color:var(--ink)}
+  .mf-verify{background:var(--bob-orange);color:#fff}
+  .mf-verify:disabled{opacity:.6}
+  .vresult{padding:14px 20px;font-size:13.5px;line-height:1.5;border-top:1px solid var(--line)}
+  .vresult.ok{background:#e9f7f0;color:#13633f}
+  .vresult.no{background:#fbeae8;color:#8f2519}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="logo">B</div>
+  <div>
+    <h1>Bank of Baroda — Core Simulator</h1>
+    <div class="sub">10 accounts you control</div>
+  </div>
+  <div class="right">
+    <span class="link" onclick="resetBank()">Reset</span>
+  </div>
+</header>
+
+<div id="trustbanner" class="banner"></div>
+
+<div class="wrap">
+  <!-- Accounts -->
+  <div class="panel">
+    <h2>Customer accounts</h2>
+    <div id="accts" class="accts"></div>
+  </div>
+
+  <!-- Control -->
+  <div class="panel">
+    <h2>Act as customer</h2>
+    <div class="body" id="control">
+      <div class="empty">Select an account on the left to begin.</div>
+    </div>
+  </div>
+
+  <!-- Activity -->
+  <div class="panel">
+    <h2>Live activity &amp; verdicts</h2>
+    <div id="feed" class="act-feed"><div class="empty">No activity yet. Run an action.</div></div>
+  </div>
+</div>
+
+<!-- AI identity-verification modal (additive overlay) -->
+<div id="modal" class="modal-overlay"><div class="modal" id="modalCard"></div></div>
+
+<script>
+const API = "";                       // same origin
+let STATE = { accounts: [], cities: [], channels: [], selected: null,
+              action: "login", running: false };
+
+function fmt(n){ return "₹" + Number(n||0).toLocaleString("en-IN"); }
+function initials(name){ return name.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase(); }
+
+function bandKey(score){ if(score<=30) return "safe"; if(score<=60) return "mid"; if(score<=80) return "high"; return "crit"; }
+function bandColor(score){ return ({safe:"#1c8c5a",mid:"#c9821a",high:"#d9683b",crit:"#c0392b"})[bandKey(score)]; }
+function actionLabel(a){ return ({silent_pass:"Allowed",push_notification:"Phone confirm",step_up_otp:"Step-up OTP",block:"Blocked"})[a]||a; }
+function actionColor(a){ return ({silent_pass:"#1c8c5a",push_notification:"#c9821a",step_up_otp:"#d9683b",block:"#c0392b"})[a]||"#8a93a6"; }
+
+async function load(){
+  const r = await fetch(API + "/api/accounts");
+  const d = await r.json();
+  STATE.accounts = d.accounts; STATE.cities = d.cities; STATE.channels = d.channels;
+  renderAccounts();
+  loadFeed();
+}
+
+function renderAccounts(){
+  const el = document.getElementById("accts");
+  el.innerHTML = STATE.accounts.map(a => `
+    <div class="acct ${STATE.selected===a.user_id?'sel':''}" onclick="select('${a.user_id}')">
+      <div class="avatar">${initials(a.name)}</div>
+      <div>
+        <div class="nm">${a.name}</div>
+        <div class="meta">${a.home_city} · ${a.account_number}</div>
+      </div>
+      <div class="bal">${fmt(a.balance)}<small>Balance</small></div>
+    </div>`).join("");
+}
+
+function acct(id){ return STATE.accounts.find(a=>a.user_id===id); }
+
+function select(id){ STATE.selected = id; STATE.action="login"; renderAccounts(); renderControl(); }
+
+function renderControl(){
+  const a = acct(STATE.selected);
+  if(!a){ return; }
+  const cityOpts = STATE.cities.map(c=>`<option ${c===a.home_city?'selected':''}>${c}</option>`).join("");
+  const chOpts = STATE.channels.map(c=>`<option value="${c}">${c.replace(/_/g,' ')}</option>`).join("");
+  const payeeOpts = STATE.accounts.filter(x=>x.user_id!==a.user_id)
+       .map(x=>`<option value="${x.user_id}">${x.name} · ${x.account_number}</option>`).join("");
+  const isTransfer = STATE.action==="transfer", isPayee = STATE.action==="add_payee";
+
+  document.getElementById("control").innerHTML = `
+    <div class="selhead">
+      <div class="avatar" style="width:48px;height:48px;font-size:18px">${initials(a.name)}</div>
+      <div><div class="big">${a.name}</div><div class="meta" style="color:var(--muted)">${a.phone} · home: ${a.home_city}</div></div>
+    </div>
+    <div class="balcard">
+      <div class="lbl">Available balance</div>
+      <div class="amt" id="balamt">${fmt(a.balance)}</div>
+      <div class="acno">${a.account_number} · ${a.ifsc}</div>
+    </div>
+
+    <label class="fl">What is the customer doing?</label>
+    <div class="actions">
+      ${["login","transfer","add_payee","profile_change","account_recovery"].map(act=>`
+        <div class="chip ${STATE.action===act?'on':''}" onclick="setAction('${act}')">
+          ${({login:"Sign in",transfer:"Transfer money",add_payee:"Add payee",profile_change:"Change profile",account_recovery:"Recover account"})[act]}
+        </div>`).join("")}
+    </div>
+
+    <div class="grid2">
+      <div class="field"><label class="fl">Channel</label><select id="channel">${chOpts}</select></div>
+      <div class="field"><label class="fl">Device</label>
+        <select id="device">
+          <option value="registered">Registered device (${a.device_id})</option>
+          <option value="new">New / unknown device</option>
+        </select>
+      </div>
+      <div class="field"><label class="fl">Location (city)</label><select id="city">${cityOpts}</select></div>
+      <div class="field"><label class="fl">Hour of day: <span id="hourval">12:00</span></label>
+        <input type="range" id="hour" min="0" max="23" value="12" oninput="document.getElementById('hourval').textContent=this.value.padStart(2,'0')+':00'"></div>
+    </div>
+
+    ${(isTransfer||isPayee) ? `
+      <div class="grid2">
+        <div class="field"><label class="fl">${isTransfer?'Send to':'Payee'}</label>
+          <select id="dest"><option value="external">External account (other bank)</option>${payeeOpts}</select></div>
+        ${isTransfer? `<div class="field"><label class="fl">Amount (₹)</label><input type="number" id="amount" value="5000" min="0"></div>`:`<div></div>`}
+      </div>` : ``}
+
+    <div class="toggles">
+      <label class="tg"><input type="checkbox" id="vpn"> Using VPN / Tor</label>
+      <label class="tg"><input type="checkbox" id="erratic"> Erratic / bot-like behaviour</label>
+      ${(isTransfer||isPayee)?`<label class="tg"><input type="checkbox" id="newpayee"> Brand-new payee</label>`:``}
+    </div>
+
+    <button class="run" id="runbtn" onclick="run()">Submit to bank →</button>
+
+    <div class="verdict" id="verdict"></div>`;
+}
+
+function setAction(a){ STATE.action=a; renderControl(); }
+
+async function run(){
+  const a = acct(STATE.selected); if(!a || STATE.running) return;
+  STATE.running = true;
+  const btn = document.getElementById("runbtn"); btn.disabled=true; btn.textContent="Processing…";
+  const body = {
+    account_id: a.user_id,
+    action: STATE.action,
+    channel: document.getElementById("channel").value,
+    device_profile: document.getElementById("device").value,
+    city: document.getElementById("city").value,
+    vpn: document.getElementById("vpn").checked,
+    erratic: document.getElementById("erratic").checked,
+    hour: parseInt(document.getElementById("hour").value,10),
+    amount: (STATE.action==="transfer") ? parseFloat(document.getElementById("amount").value||"0") : 0,
+    dest_account: (document.getElementById("dest")||{}).value || "",
+    new_payee: (document.getElementById("newpayee")||{}).checked || false,
+  };
+  try{
+    const r = await fetch(API+"/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(!r.ok){ const e=await r.json(); showBanner(e.detail||"Action failed"); }
+    else {
+      const d=await r.json(); hideBanner();
+      if(d.status==="verification_required") openVerify(d);
+      else applyResult(d);
+    }
+  }catch(e){ showBanner("Could not reach the simulator server."); }
+  finally{ STATE.running=false; btn.disabled=false; btn.textContent="Submit to bank →"; }
+}
+
+function applyResult(d){
+  // Update balances locally.
+  const i = STATE.accounts.findIndex(x=>x.user_id===d.account.user_id);
+  if(i>=0) STATE.accounts[i] = {...STATE.accounts[i], ...d.account};
+  renderAccounts();
+  const balEl = document.getElementById("balamt"); if(balEl) balEl.textContent = fmt(d.account.balance);
+
+  const v = d.verdict, vc = actionColor(v.action);
+  const el = document.getElementById("verdict");
+  el.className = "verdict show";
+  el.innerHTML = `
+    <div class="vtop" style="background:${vc}">
+      <span class="vbadge">${actionLabel(v.action)}</span>
+      <span>${d.message}</span>
+    </div>`;
+  loadFeed();
+}
+
+async function loadFeed(){
+  try{
+    const r = await fetch(API+"/api/activity"); const items = await r.json();
+    const el = document.getElementById("feed");
+    if(!items.length){ el.innerHTML = `<div class="empty">No activity yet. Run an action.</div>`; return; }
+    el.innerHTML = items.map(it=>{
+      const v = it.verdict||{}; const k = bandKey(v.risk_score||0);
+      let tag, tagcls;
+      if(it.status==="denied"){ tag="Denied"; tagcls="t-crit"; }
+      else if(it.status==="verified"){ tag="AI verified"; tagcls="t-safe"; }
+      else if(it.status==="verification_required"){ tag="AI verifying"; tagcls="t-high"; }
+      else if(it.blocked){ tag="Blocked"; tagcls="t-crit"; }
+      else { tag=actionLabel(v.action); tagcls="t-"+(({silent_pass:"safe",push_notification:"mid",step_up_otp:"high",block:"crit"})[v.action]||"neutral"); }
+      const when = new Date(it.timestamp).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"});
+      const amt = it.amount ? ` · ${fmt(it.amount)}` : "";
+      return `<div class="feed-item">
+        <div class="ln1"><span class="who">${it.account}</span>
+          <span class="meta" style="color:var(--muted)">${it.action.replace(/_/g,' ')}${amt}</span>
+          <span class="tag ${tagcls}">${tag}</span></div>
+        <div class="msg">${it.channel.replace(/_/g,' ')} · ${it.city} · ${when} — ${it.message}</div>
+      </div>`;
+    }).join("");
+  }catch(e){}
+}
+
+function openVerify(d){
+  STATE.verify = d.verification;
+  const v = d.verification;
+  const badge = "Identity check";
+  const qhtml = v.questions.map(q=>`
+    <div class="vq"><label>${q.prompt}</label>
+      <input id="va_${q.id}" autocomplete="off" placeholder="Your answer"></div>`).join("");
+  document.getElementById("modalCard").innerHTML = `
+    <div class="modal-top">
+      <span class="mt-ico">🔒</span>
+      <div><h3>Real-time identity verification</h3>
+        <div class="sub">This action looked suspicious — confirm it's really you</div></div>
+      <span class="ai-badge">${badge}</span>
+    </div>
+    <div class="modal-body">
+      <div class="modal-intro">${v.intro||"Please confirm a few details about your account."}</div>
+      ${qhtml}
+    </div>
+    <div class="modal-foot">
+      <button class="mf-cancel" onclick="closeModal()">Cancel</button>
+      <button class="mf-verify" id="vbtn" onclick="submitVerify()">Verify identity</button>
+    </div>`;
+  document.getElementById("modal").className = "modal-overlay show";
+}
+
+async function submitVerify(){
+  const v = STATE.verify; if(!v) return;
+  const answers = {};
+  v.questions.forEach(q=>{ answers[q.id] = (document.getElementById("va_"+q.id)||{}).value || ""; });
+  const btn = document.getElementById("vbtn"); btn.disabled=true; btn.textContent="Verifying…";
+  try{
+    const r = await fetch(API+"/api/verify/submit",{method:"POST",headers:{"Content-Type":"application/json"},
+              body:JSON.stringify({session_id:v.session_id, answers})});
+    const d = await r.json();
+    const vr = d.verification||{};
+    const cls = d.verified ? "ok" : "no";
+    const conf = Math.round((vr.confidence||0)*100);
+    document.getElementById("modalCard").insertAdjacentHTML("beforeend",
+      `<div class="vresult ${cls}"><b>${d.verified?"✓ Verified":"✗ Not verified"}</b> · confidence ${conf}%<br>${vr.reason||""}<br><br>${d.message||""}</div>`);
+    document.querySelector(".modal-foot").innerHTML =
+      `<button class="mf-cancel" onclick="closeModal()" style="flex:1">Close</button>`;
+    // Reflect new balances / feed.
+    if(d.account){
+      const i = STATE.accounts.findIndex(x=>x.user_id===d.account.user_id);
+      if(i>=0) STATE.accounts[i] = {...STATE.accounts[i], ...d.account};
+      renderAccounts();
+      const balEl = document.getElementById("balamt"); if(balEl) balEl.textContent = fmt(d.account.balance);
+    }
+    loadFeed();
+  }catch(e){ btn.disabled=false; btn.textContent="Verify identity"; showBanner("Verification failed to reach the server."); }
+}
+
+function closeModal(){ document.getElementById("modal").className="modal-overlay"; STATE.verify=null; }
+
+async function resetBank(){
+  if(!confirm("Reset all balances and clear activity?")) return;
+  await fetch(API+"/api/reset",{method:"POST"});
+  STATE.selected=null; await load();
+  document.getElementById("control").innerHTML = `<div class="empty">Select an account on the left to begin.</div>`;
+}
+
+function showBanner(msg){ const b=document.getElementById("trustbanner"); b.textContent=msg; b.className="banner show"; }
+function hideBanner(){ document.getElementById("trustbanner").className="banner"; }
+
+load();
+setInterval(loadFeed, 6000);
+</script>
+</body>
+</html>
