@@ -11,7 +11,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-import _env  # noqa: F401  (loads bank_simulator/.env into os.environ)
+try:
+    import _env  # noqa: F401  (loads bank_simulator/.env into os.environ)
+except ImportError:
+    pass
 import ai_verifier
 import db
 from trust_client import TrustIQError, evaluate as trustiq_evaluate, health as trustiq_health
