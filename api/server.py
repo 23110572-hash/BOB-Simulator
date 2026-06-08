@@ -27,7 +27,10 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 @app.on_event("startup")
 def _startup() -> None:
     """Create tables and seed the ten accounts in Neon Postgres on boot."""
-    db.init_db()
+    try:
+        db.init_db()
+    except Exception as exc:
+        logger.error("Failed to initialize database on startup: %s", exc)
 
 # Cities TrustIQ can geo-locate (lat, lon) — used to compute travel distance.
 CITY_COORDS = {
@@ -251,8 +254,16 @@ def index() -> FileResponse:
 @app.get("/api/accounts")
 def list_accounts() -> dict:
     """Return all controllable accounts, cities, channels and TrustIQ status."""
+    try:
+        accounts = db.get_accounts()
+    except Exception as exc:
+        logger.error("Failed to load accounts: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database error: {exc}. Please verify DATABASE_URL is set correctly in Vercel settings."
+        )
     return {
-        "accounts": [_account_public(a) for a in db.get_accounts().values()],
+        "accounts": [_account_public(a) for a in accounts.values()],
         "cities": list(CITY_COORDS.keys()),
         "channels": CHANNELS,
         "trustiq": trustiq_health(),
