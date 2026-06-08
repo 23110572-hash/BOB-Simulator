@@ -8,7 +8,7 @@ import httpx
 
 logger = logging.getLogger("bob_sim.trust_client")
 
-TRUSTIQ_URL = os.environ.get("TRUSTIQ_URL", "http://127.0.0.1:8000").rstrip("/")
+TRUSTIQ_URL = os.environ.get("TRUSTIQ_URL", "https://trustiq-67h0.onrender.com").rstrip("/")
 TRUSTIQ_API_KEY = os.environ.get("TRUSTIQ_API_KEY", "bob-trustiq-live-key-2026")
 
 _EVALUATE_PATH = "/api/trust/evaluate"
