@@ -7,48 +7,41 @@ of in process memory, across three separate tables:
 * ``bank_activity``         — the live action / verdict log.
 * ``bank_verify_sessions``  — pending AI identity-verification challenges.
 
-Connections are drawn from a small thread-safe pool so the synchronous FastAPI
-handlers can each grab their own connection safely. The DSN is read from
-``DATABASE_URL`` (loaded from ``bank_simulator/.env`` by ``_env``).
+The driver is **pg8000**, a pure-Python Postgres client. Unlike psycopg2's
+binary wheel, it loads and runs reliably on serverless runtimes (Vercel /
+AWS Lambda), where the native libpq in ``psycopg2-binary`` can crash the
+function process. The connection string is read from ``DATABASE_URL``.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
-from contextlib import contextmanager
-from typing import Dict, List, Optional
+import ssl
+from typing import Any, Dict, List, Optional, Sequence
 
-# psycopg2 is imported defensively: if the binary wheel fails to load on the
-# hosting runtime, we surface a clean error from the DB calls instead of
-# crashing the whole serverless function at import time.
+# pg8000 is imported defensively so a runtime issue surfaces as a clean error
+# from the DB calls rather than crashing the whole serverless function.
 try:
-    import psycopg2
-    from psycopg2.extras import Json, RealDictCursor
-    from psycopg2.pool import ThreadedConnectionPool
-    _PSYCOPG2_IMPORT_ERROR: Optional[Exception] = None
+    import pg8000.dbapi as pg
+    _DRIVER_IMPORT_ERROR: Optional[Exception] = None
 except Exception as exc:  # pragma: no cover - depends on runtime wheels
-    psycopg2 = None  # type: ignore
-    Json = None  # type: ignore
-    RealDictCursor = None  # type: ignore
-    ThreadedConnectionPool = None  # type: ignore
-    _PSYCOPG2_IMPORT_ERROR = exc
+    pg = None  # type: ignore
+    _DRIVER_IMPORT_ERROR = exc
 
 from accounts import SEED_ACCOUNTS
 
 logger = logging.getLogger("bob_sim.db")
 
-_POOL: Optional["ThreadedConnectionPool"] = None
+_CONN: Any = None
 _INITIALIZED = False
 
 
-def _dsn() -> str:
-    """Return the Neon Postgres DSN from the environment, sanitised for serverless.
-
-    ``channel_binding=require`` is removed because the libpq bundled with the
-    psycopg2 binary wheel cannot always negotiate SCRAM channel binding, which
-    makes the connection hang on serverless runtimes. ``sslmode=require`` is
-    kept so the connection stays encrypted.
-    """
+# --------------------------------------------------------------------------- #
+# Connection handling
+# --------------------------------------------------------------------------- #
+def _connect_params() -> dict:
+    """Parse ``DATABASE_URL`` into pg8000 connection keyword arguments."""
     dsn = os.environ.get("DATABASE_URL", "").strip()
     if not dsn:
         raise RuntimeError(
@@ -56,126 +49,151 @@ def _dsn() -> str:
             "environment variable in your hosting dashboard (Vercel) or in "
             "bank_simulator/.env for local development."
         )
-    return _sanitize_dsn(dsn)
+    from urllib.parse import urlsplit, unquote
+
+    parts = urlsplit(dsn)
+    return {
+        "user": unquote(parts.username) if parts.username else "",
+        "password": unquote(parts.password) if parts.password else None,
+        "host": parts.hostname or "localhost",
+        "port": parts.port or 5432,
+        "database": (parts.path or "/").lstrip("/") or "neondb",
+    }
 
 
-def _sanitize_dsn(dsn: str) -> str:
-    """Drop connection params that break psycopg2 on serverless runtimes."""
+def _new_connection():
+    """Open a fresh TLS connection to Neon."""
+    if _DRIVER_IMPORT_ERROR is not None:
+        raise RuntimeError(f"pg8000 is not available in this runtime: {_DRIVER_IMPORT_ERROR}")
+    params = _connect_params()
+    # Neon mandates TLS and uses SNI; a default verified context works with
+    # Neon's publicly-trusted certificate.
+    ssl_ctx = ssl.create_default_context()
+    conn = pg.connect(ssl_context=ssl_ctx, timeout=10, **params)
+    conn.autocommit = False
+    logger.info("Connected to Neon Postgres via pg8000.")
+    return conn
+
+
+def _get_conn():
+    """Return a cached connection, opening one on first use."""
+    global _CONN
+    if _CONN is None:
+        _CONN = _new_connection()
+    return _CONN
+
+
+def _reset_conn() -> None:
+    """Drop the cached connection so the next call reconnects."""
+    global _CONN
+    if _CONN is not None:
+        try:
+            _CONN.close()
+        except Exception:
+            pass
+    _CONN = None
+
+
+def _execute(sql: str, params: Sequence[Any] = (), *, fetch: bool = False,
+             commit: bool = True, _retry: bool = True) -> Optional[List[dict]]:
+    """Run a statement, returning rows as dicts when ``fetch`` is True.
+
+    Transparently reconnects and retries once if the cached connection has
+    gone stale (a common situation on serverless where instances are paused).
+    """
+    conn = _get_conn()
     try:
-        from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
-
-        parts = urlsplit(dsn)
-        if not parts.query:
-            return dsn
-        kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
-                if k.lower() != "channel_binding"]
-        return urlunsplit(parts._replace(query=urlencode(kept)))
+        cur = conn.cursor()
+        cur.execute(sql, tuple(params))
+        result: Optional[List[dict]] = None
+        if fetch:
+            cols = [c[0] for c in cur.description] if cur.description else []
+            result = [dict(zip(cols, row)) for row in cur.fetchall()]
+        cur.close()
+        if commit:
+            conn.commit()
+        return result
     except Exception:
-        # If parsing fails for any reason, fall back to the raw DSN.
-        return dsn
-
-
-def _pool() -> "ThreadedConnectionPool":
-    """Return the lazily-created connection pool."""
-    global _POOL
-    if _PSYCOPG2_IMPORT_ERROR is not None:
-        raise RuntimeError(
-            f"psycopg2 is not available in this runtime: {_PSYCOPG2_IMPORT_ERROR}"
-        )
-    if _POOL is None:
-        # connect_timeout makes a bad/unreachable DB fail fast instead of
-        # hanging until the serverless function is killed.
-        _POOL = ThreadedConnectionPool(
-            minconn=1, maxconn=10, dsn=_dsn(), connect_timeout=8
-        )
-        logger.info("Connected to Neon Postgres connection pool.")
-    return _POOL
-
-
-@contextmanager
-def _conn():
-    """Yield a pooled connection, committing on success and returning it after."""
-    pool = _pool()
-    conn = pool.getconn()
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        if _retry:
+            # The connection may have been closed by the server; reconnect once.
+            _reset_conn()
+            return _execute(sql, params, fetch=fetch, commit=commit, _retry=False)
         raise
-    finally:
-        pool.putconn(conn)
+
+
+def _jsonb(value: Any) -> Optional[str]:
+    """Serialise a value for a JSONB column (or None)."""
+    return None if value is None else json.dumps(value)
 
 
 # --------------------------------------------------------------------------- #
 # Schema + seed
 # --------------------------------------------------------------------------- #
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS bank_accounts (
-    user_id        TEXT PRIMARY KEY,
-    position       INTEGER NOT NULL DEFAULT 0,
-    name           TEXT NOT NULL,
-    account_number TEXT NOT NULL,
-    ifsc           TEXT NOT NULL,
-    balance        DOUBLE PRECISION NOT NULL,
-    home_city      TEXT NOT NULL,
-    device_id      TEXT NOT NULL,
-    device_os      TEXT NOT NULL,
-    phone          TEXT NOT NULL,
-    last_action    TEXT,
-    last_verdict   JSONB,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS bank_activity (
-    id           TEXT PRIMARY KEY,
-    ts           TIMESTAMPTZ NOT NULL,
-    account      TEXT NOT NULL,
-    user_id      TEXT NOT NULL,
-    action       TEXT NOT NULL,
-    channel      TEXT NOT NULL,
-    city         TEXT,
-    amount       DOUBLE PRECISION,
-    executed     BOOLEAN NOT NULL,
-    blocked      BOOLEAN NOT NULL,
-    status       TEXT NOT NULL,
-    message      TEXT,
-    verdict      JSONB,
-    verification JSONB
-);
-CREATE INDEX IF NOT EXISTS idx_bank_activity_ts ON bank_activity (ts DESC);
-
-CREATE TABLE IF NOT EXISTS bank_verify_sessions (
-    session_id TEXT PRIMARY KEY,
-    account_id TEXT NOT NULL,
-    request    JSONB NOT NULL,
-    questions  JSONB NOT NULL,
-    verdict    JSONB,
-    city       TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-"""
-
-# Columns that make up the public/runtime account record.
-_ACCOUNT_COLS = (
-    "user_id", "name", "account_number", "ifsc", "balance", "home_city",
-    "device_id", "device_os", "phone", "last_action", "last_verdict",
-)
+_SCHEMA_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS bank_accounts (
+        user_id        TEXT PRIMARY KEY,
+        position       INTEGER NOT NULL DEFAULT 0,
+        name           TEXT NOT NULL,
+        account_number TEXT NOT NULL,
+        ifsc           TEXT NOT NULL,
+        balance        DOUBLE PRECISION NOT NULL,
+        home_city      TEXT NOT NULL,
+        device_id      TEXT NOT NULL,
+        device_os      TEXT NOT NULL,
+        phone          TEXT NOT NULL,
+        last_action    TEXT,
+        last_verdict   JSONB,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS bank_activity (
+        id           TEXT PRIMARY KEY,
+        ts           TIMESTAMPTZ NOT NULL,
+        account      TEXT NOT NULL,
+        user_id      TEXT NOT NULL,
+        action       TEXT NOT NULL,
+        channel      TEXT NOT NULL,
+        city         TEXT,
+        amount       DOUBLE PRECISION,
+        executed     BOOLEAN NOT NULL,
+        blocked      BOOLEAN NOT NULL,
+        status       TEXT NOT NULL,
+        message      TEXT,
+        verdict      JSONB,
+        verification JSONB
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_bank_activity_ts ON bank_activity (ts DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS bank_verify_sessions (
+        session_id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        request    JSONB NOT NULL,
+        questions  JSONB NOT NULL,
+        verdict    JSONB,
+        city       TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+]
 
 
 def init_db() -> None:
     """Create the tables if needed and seed the ten accounts once."""
     global _INITIALIZED
-    with _conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(_SCHEMA)
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM bank_accounts")
-            count = cur.fetchone()[0]
-        if count == 0:
-            _seed_accounts(conn)
-            logger.info("Seeded %d bank accounts into Neon Postgres.", len(SEED_ACCOUNTS))
+    for stmt in _SCHEMA_STATEMENTS:
+        _execute(stmt)
+    rows = _execute("SELECT COUNT(*) AS c FROM bank_accounts", fetch=True)
+    if rows and rows[0]["c"] == 0:
+        _seed_accounts()
+        logger.info("Seeded %d bank accounts into Neon Postgres.", len(SEED_ACCOUNTS))
     _INITIALIZED = True
 
 
@@ -191,67 +209,54 @@ def _ensure_initialized() -> None:
     init_db()
 
 
-def _seed_accounts(conn) -> None:
+def _seed_accounts() -> None:
     """Insert the seed accounts (idempotent via ON CONFLICT)."""
-    with conn.cursor() as cur:
-        for pos, a in enumerate(SEED_ACCOUNTS):
-            cur.execute(
-                """
-                INSERT INTO bank_accounts
-                    (user_id, position, name, account_number, ifsc, balance,
-                     home_city, device_id, device_os, phone, last_action, last_verdict)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,NULL)
-                ON CONFLICT (user_id) DO NOTHING
-                """,
-                (a["user_id"], pos, a["name"], a["account_number"], a["ifsc"],
-                 a["balance"], a["home_city"], a["device_id"], a["device_os"],
-                 a["phone"]),
-            )
+    for pos, a in enumerate(SEED_ACCOUNTS):
+        _execute(
+            """
+            INSERT INTO bank_accounts
+                (user_id, position, name, account_number, ifsc, balance,
+                 home_city, device_id, device_os, phone, last_action, last_verdict)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,NULL)
+            ON CONFLICT (user_id) DO NOTHING
+            """,
+            (a["user_id"], pos, a["name"], a["account_number"], a["ifsc"],
+             a["balance"], a["home_city"], a["device_id"], a["device_os"],
+             a["phone"]),
+        )
 
 
 # --------------------------------------------------------------------------- #
 # Accounts
 # --------------------------------------------------------------------------- #
+_ACCOUNT_SELECT = (
+    "SELECT user_id, name, account_number, ifsc, balance, home_city, "
+    "device_id, device_os, phone, last_action, last_verdict FROM bank_accounts"
+)
+
+
 def get_accounts() -> Dict[str, dict]:
     """Return all accounts keyed by user_id, in seed order."""
     _ensure_initialized()
-    with _conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT user_id, name, account_number, ifsc, balance, home_city, "
-                "device_id, device_os, phone, last_action, last_verdict "
-                "FROM bank_accounts ORDER BY position ASC"
-            )
-            rows = cur.fetchall()
-    return {r["user_id"]: dict(r) for r in rows}
+    rows = _execute(_ACCOUNT_SELECT + " ORDER BY position ASC", fetch=True) or []
+    return {r["user_id"]: r for r in rows}
 
 
 def get_account(user_id: str) -> Optional[dict]:
     """Return a single account record or None."""
     _ensure_initialized()
-    with _conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT user_id, name, account_number, ifsc, balance, home_city, "
-                "device_id, device_os, phone, last_action, last_verdict "
-                "FROM bank_accounts WHERE user_id = %s",
-                (user_id,),
-            )
-            row = cur.fetchone()
-    return dict(row) if row else None
+    rows = _execute(_ACCOUNT_SELECT + " WHERE user_id = %s", (user_id,), fetch=True) or []
+    return rows[0] if rows else None
 
 
 def update_account(acct: dict) -> None:
     """Persist mutable account fields (balance, last action/verdict)."""
-    with _conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE bank_accounts SET balance=%s, last_action=%s, "
-                "last_verdict=%s, updated_at=now() WHERE user_id=%s",
-                (acct["balance"], acct.get("last_action"),
-                 Json(acct.get("last_verdict")) if acct.get("last_verdict") is not None else None,
-                 acct["user_id"]),
-            )
+    _execute(
+        "UPDATE bank_accounts SET balance=%s, last_action=%s, "
+        "last_verdict=%s::jsonb, updated_at=now() WHERE user_id=%s",
+        (acct["balance"], acct.get("last_action"),
+         _jsonb(acct.get("last_verdict")), acct["user_id"]),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -259,42 +264,33 @@ def update_account(acct: dict) -> None:
 # --------------------------------------------------------------------------- #
 def insert_activity(entry: dict) -> None:
     """Append an entry to the activity log."""
-    with _conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO bank_activity
-                    (id, ts, account, user_id, action, channel, city, amount,
-                     executed, blocked, status, message, verdict, verification)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (entry["id"], entry["timestamp"], entry["account"], entry["user_id"],
-                 entry["action"], entry["channel"], entry.get("city"), entry.get("amount"),
-                 entry["executed"], entry["blocked"], entry["status"], entry.get("message"),
-                 Json(entry.get("verdict")) if entry.get("verdict") is not None else None,
-                 Json(entry.get("verification")) if entry.get("verification") is not None else None),
-            )
+    _execute(
+        """
+        INSERT INTO bank_activity
+            (id, ts, account, user_id, action, channel, city, amount,
+             executed, blocked, status, message, verdict, verification)
+        VALUES (%s,%s::timestamptz,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb)
+        """,
+        (entry["id"], entry["timestamp"], entry["account"], entry["user_id"],
+         entry["action"], entry["channel"], entry.get("city"), entry.get("amount"),
+         entry["executed"], entry["blocked"], entry["status"], entry.get("message"),
+         _jsonb(entry.get("verdict")), _jsonb(entry.get("verification"))),
+    )
 
 
 def get_activity(limit: int = 40) -> List[dict]:
     """Return the most recent activity entries, newest first."""
     _ensure_initialized()
-    with _conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT id, ts, account, user_id, action, channel, city, amount, "
-                "executed, blocked, status, message, verdict, verification "
-                "FROM bank_activity ORDER BY ts DESC LIMIT %s",
-                (limit,),
-            )
-            rows = cur.fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        ts = d.pop("ts")
-        d["timestamp"] = ts.isoformat() if ts else None
-        out.append(d)
-    return out
+    rows = _execute(
+        "SELECT id, ts, account, user_id, action, channel, city, amount, "
+        "executed, blocked, status, message, verdict, verification "
+        "FROM bank_activity ORDER BY ts DESC LIMIT %s",
+        (limit,), fetch=True,
+    ) or []
+    for d in rows:
+        ts = d.pop("ts", None)
+        d["timestamp"] = ts.isoformat() if hasattr(ts, "isoformat") else ts
+    return rows
 
 
 # --------------------------------------------------------------------------- #
@@ -302,30 +298,25 @@ def get_activity(limit: int = 40) -> List[dict]:
 # --------------------------------------------------------------------------- #
 def save_verify_session(session_id: str, data: dict) -> None:
     """Store a pending AI verification challenge."""
-    with _conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO bank_verify_sessions
-                    (session_id, account_id, request, questions, verdict, city)
-                VALUES (%s,%s,%s,%s,%s,%s)
-                """,
-                (session_id, data["account_id"], Json(data["request"]),
-                 Json(data["questions"]), Json(data.get("verdict")), data.get("city")),
-            )
+    _execute(
+        """
+        INSERT INTO bank_verify_sessions
+            (session_id, account_id, request, questions, verdict, city)
+        VALUES (%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s)
+        """,
+        (session_id, data["account_id"], _jsonb(data["request"]),
+         _jsonb(data["questions"]), _jsonb(data.get("verdict")), data.get("city")),
+    )
 
 
 def pop_verify_session(session_id: str) -> Optional[dict]:
     """Fetch and delete a verification session (single use)."""
-    with _conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "DELETE FROM bank_verify_sessions WHERE session_id = %s "
-                "RETURNING account_id, request, questions, verdict, city",
-                (session_id,),
-            )
-            row = cur.fetchone()
-    return dict(row) if row else None
+    rows = _execute(
+        "DELETE FROM bank_verify_sessions WHERE session_id = %s "
+        "RETURNING account_id, request, questions, verdict, city",
+        (session_id,), fetch=True,
+    ) or []
+    return rows[0] if rows else None
 
 
 # --------------------------------------------------------------------------- #
@@ -334,27 +325,22 @@ def pop_verify_session(session_id: str) -> Optional[dict]:
 def reset() -> None:
     """Restore seed balances, clear last verdicts, and wipe logs/sessions."""
     _ensure_initialized()
-    with _conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM bank_activity")
-            cur.execute("DELETE FROM bank_verify_sessions")
-            for a in SEED_ACCOUNTS:
-                cur.execute(
-                    "UPDATE bank_accounts SET balance=%s, last_action=NULL, "
-                    "last_verdict=NULL, updated_at=now() WHERE user_id=%s",
-                    (a["balance"], a["user_id"]),
-                )
-        # Make sure any accounts that were never seeded exist.
-        _seed_accounts(conn)
+    _execute("DELETE FROM bank_activity")
+    _execute("DELETE FROM bank_verify_sessions")
+    for a in SEED_ACCOUNTS:
+        _execute(
+            "UPDATE bank_accounts SET balance=%s, last_action=NULL, "
+            "last_verdict=NULL, updated_at=now() WHERE user_id=%s",
+            (a["balance"], a["user_id"]),
+        )
+    # Make sure any accounts that were never seeded exist.
+    _seed_accounts()
 
 
 def health() -> bool:
     """Return True if the database is reachable."""
     try:
-        with _conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                cur.fetchone()
+        _execute("SELECT 1", fetch=True)
         return True
     except Exception as exc:  # pragma: no cover - demo resilience
         logger.warning("Database health check failed: %s", exc)
