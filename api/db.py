@@ -18,15 +18,26 @@ import os
 from contextlib import contextmanager
 from typing import Dict, List, Optional
 
-import psycopg2
-from psycopg2.extras import Json, RealDictCursor
-from psycopg2.pool import ThreadedConnectionPool
+# psycopg2 is imported defensively: if the binary wheel fails to load on the
+# hosting runtime, we surface a clean error from the DB calls instead of
+# crashing the whole serverless function at import time.
+try:
+    import psycopg2
+    from psycopg2.extras import Json, RealDictCursor
+    from psycopg2.pool import ThreadedConnectionPool
+    _PSYCOPG2_IMPORT_ERROR: Optional[Exception] = None
+except Exception as exc:  # pragma: no cover - depends on runtime wheels
+    psycopg2 = None  # type: ignore
+    Json = None  # type: ignore
+    RealDictCursor = None  # type: ignore
+    ThreadedConnectionPool = None  # type: ignore
+    _PSYCOPG2_IMPORT_ERROR = exc
 
 from accounts import SEED_ACCOUNTS
 
 logger = logging.getLogger("bob_sim.db")
 
-_POOL: Optional[ThreadedConnectionPool] = None
+_POOL: Optional["ThreadedConnectionPool"] = None
 _INITIALIZED = False
 
 
@@ -35,15 +46,20 @@ def _dsn() -> str:
     dsn = os.environ.get("DATABASE_URL", "").strip()
     if not dsn:
         raise RuntimeError(
-            "DATABASE_URL is not set. Add the Neon connection string to "
-            "bank_simulator/.env before starting the simulator."
+            "DATABASE_URL is not set. Add the Neon connection string as an "
+            "environment variable in your hosting dashboard (Vercel) or in "
+            "bank_simulator/.env for local development."
         )
     return dsn
 
 
-def _pool() -> ThreadedConnectionPool:
+def _pool() -> "ThreadedConnectionPool":
     """Return the lazily-created connection pool."""
     global _POOL
+    if _PSYCOPG2_IMPORT_ERROR is not None:
+        raise RuntimeError(
+            f"psycopg2 is not available in this runtime: {_PSYCOPG2_IMPORT_ERROR}"
+        )
     if _POOL is None:
         _POOL = ThreadedConnectionPool(minconn=1, maxconn=10, dsn=_dsn())
         logger.info("Connected to Neon Postgres connection pool.")

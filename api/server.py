@@ -269,7 +269,11 @@ def list_accounts() -> dict:
 @app.get("/api/activity")
 def activity() -> List[dict]:
     """Return the most recent simulated actions and their TrustIQ verdicts."""
-    return db.get_activity(40)
+    try:
+        return db.get_activity(40)
+    except Exception as exc:
+        logger.error("Failed to load activity: %s", exc)
+        return []
 
 
 @app.post("/api/reset")
