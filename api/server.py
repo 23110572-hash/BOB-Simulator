@@ -256,21 +256,22 @@ def index() -> FileResponse:
 @app.get("/api/accounts")
 def list_accounts() -> dict:
     """Return all controllable accounts, cities, channels and TrustIQ status."""
+    import traceback
     try:
         accounts = db.get_accounts()
+        return {
+            "accounts": [_account_public(a) for a in accounts.values()],
+            "cities": list(CITY_COORDS.keys()),
+            "channels": CHANNELS,
+            "trustiq": trustiq_health(),
+            "gemini": ai_verifier.gemini_available(),
+        }
     except Exception as exc:
-        logger.error("Failed to load accounts: %s", exc)
+        logger.error("Failed to load accounts: %s", traceback.format_exc())
         raise HTTPException(
             status_code=500,
-            detail=f"Database error: {exc}. Please verify DATABASE_URL is set correctly in Vercel settings."
+            detail=f"{type(exc).__name__}: {exc}",
         )
-    return {
-        "accounts": [_account_public(a) for a in accounts.values()],
-        "cities": list(CITY_COORDS.keys()),
-        "channels": CHANNELS,
-        "trustiq": trustiq_health(),
-        "gemini": ai_verifier.gemini_available(),
-    }
 
 
 @app.get("/api/activity")
