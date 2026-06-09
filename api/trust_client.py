@@ -48,16 +48,27 @@ def evaluate(payload: dict) -> dict:
         )
     if resp.status_code >= 400:
         raise TrustIQError(f"TrustIQ error {resp.status_code}: {resp.text[:200]}")
-    return resp.json()
+    try:
+        return resp.json()
+    except Exception as exc:
+        raise TrustIQError(
+            f"TrustIQ returned a non-JSON response (the backend may be "
+            f"starting up). Please retry in a moment."
+        ) from exc
 
 
 def health() -> Optional[dict]:
-    """Return TrustIQ's root health payload, or None if unreachable."""
+    """Return TrustIQ's root health payload, or None if unreachable.
+
+    Never raises: any transport error, bad status, or non-JSON/slow response
+    from a cold-starting backend simply yields None so the simulator keeps
+    working regardless of TrustIQ's availability.
+    """
     try:
         with httpx.Client(timeout=2.5) as client:
             resp = client.get(f"{TRUSTIQ_URL}/")
             if resp.status_code < 400:
                 return resp.json()
-    except httpx.RequestError:
+    except Exception:
         return None
     return None
