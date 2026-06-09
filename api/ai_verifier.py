@@ -9,7 +9,10 @@ from typing import Dict, List, Optional, Tuple
 
 import httpx
 
-import _env  # noqa: F401  (loads bank_simulator/.env into os.environ)
+try:
+    import _env  # noqa: F401  (loads a local .env into os.environ when present)
+except ImportError:
+    pass
 
 logger = logging.getLogger("bob_sim.ai_verifier")
 

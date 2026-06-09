@@ -27,6 +27,7 @@ from accounts import SEED_ACCOUNTS
 logger = logging.getLogger("bob_sim.db")
 
 _POOL: Optional[ThreadedConnectionPool] = None
+_INITIALIZED = False
 
 
 def _dsn() -> str:
@@ -123,6 +124,7 @@ _ACCOUNT_COLS = (
 
 def init_db() -> None:
     """Create the tables if needed and seed the ten accounts once."""
+    global _INITIALIZED
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(_SCHEMA)
@@ -132,6 +134,19 @@ def init_db() -> None:
         if count == 0:
             _seed_accounts(conn)
             logger.info("Seeded %d bank accounts into Neon Postgres.", len(SEED_ACCOUNTS))
+    _INITIALIZED = True
+
+
+def _ensure_initialized() -> None:
+    """Lazily create/seed the schema once per process.
+
+    Vercel's serverless runtime does not always run FastAPI startup events, so
+    every public entry point calls this to guarantee the tables exist before
+    the first query. The work only happens once per cold start.
+    """
+    if _INITIALIZED:
+        return
+    init_db()
 
 
 def _seed_accounts(conn) -> None:
@@ -157,6 +172,7 @@ def _seed_accounts(conn) -> None:
 # --------------------------------------------------------------------------- #
 def get_accounts() -> Dict[str, dict]:
     """Return all accounts keyed by user_id, in seed order."""
+    _ensure_initialized()
     with _conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
@@ -170,6 +186,7 @@ def get_accounts() -> Dict[str, dict]:
 
 def get_account(user_id: str) -> Optional[dict]:
     """Return a single account record or None."""
+    _ensure_initialized()
     with _conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
@@ -219,6 +236,7 @@ def insert_activity(entry: dict) -> None:
 
 def get_activity(limit: int = 40) -> List[dict]:
     """Return the most recent activity entries, newest first."""
+    _ensure_initialized()
     with _conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
@@ -273,6 +291,7 @@ def pop_verify_session(session_id: str) -> Optional[dict]:
 # --------------------------------------------------------------------------- #
 def reset() -> None:
     """Restore seed balances, clear last verdicts, and wipe logs/sessions."""
+    _ensure_initialized()
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM bank_activity")
