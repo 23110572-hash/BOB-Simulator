@@ -42,7 +42,13 @@ _INITIALIZED = False
 
 
 def _dsn() -> str:
-    """Return the Neon Postgres DSN from the environment."""
+    """Return the Neon Postgres DSN from the environment, sanitised for serverless.
+
+    ``channel_binding=require`` is removed because the libpq bundled with the
+    psycopg2 binary wheel cannot always negotiate SCRAM channel binding, which
+    makes the connection hang on serverless runtimes. ``sslmode=require`` is
+    kept so the connection stays encrypted.
+    """
     dsn = os.environ.get("DATABASE_URL", "").strip()
     if not dsn:
         raise RuntimeError(
@@ -50,7 +56,23 @@ def _dsn() -> str:
             "environment variable in your hosting dashboard (Vercel) or in "
             "bank_simulator/.env for local development."
         )
-    return dsn
+    return _sanitize_dsn(dsn)
+
+
+def _sanitize_dsn(dsn: str) -> str:
+    """Drop connection params that break psycopg2 on serverless runtimes."""
+    try:
+        from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+
+        parts = urlsplit(dsn)
+        if not parts.query:
+            return dsn
+        kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+                if k.lower() != "channel_binding"]
+        return urlunsplit(parts._replace(query=urlencode(kept)))
+    except Exception:
+        # If parsing fails for any reason, fall back to the raw DSN.
+        return dsn
 
 
 def _pool() -> "ThreadedConnectionPool":
@@ -61,7 +83,11 @@ def _pool() -> "ThreadedConnectionPool":
             f"psycopg2 is not available in this runtime: {_PSYCOPG2_IMPORT_ERROR}"
         )
     if _POOL is None:
-        _POOL = ThreadedConnectionPool(minconn=1, maxconn=10, dsn=_dsn())
+        # connect_timeout makes a bad/unreachable DB fail fast instead of
+        # hanging until the serverless function is killed.
+        _POOL = ThreadedConnectionPool(
+            minconn=1, maxconn=10, dsn=_dsn(), connect_timeout=8
+        )
         logger.info("Connected to Neon Postgres connection pool.")
     return _POOL
 

@@ -54,7 +54,7 @@ def evaluate(payload: dict) -> dict:
 def health() -> Optional[dict]:
     """Return TrustIQ's root health payload, or None if unreachable."""
     try:
-        with httpx.Client(timeout=4.0) as client:
+        with httpx.Client(timeout=2.5) as client:
             resp = client.get(f"{TRUSTIQ_URL}/")
             if resp.status_code < 400:
                 return resp.json()
