@@ -3,16 +3,23 @@ from __future__ import annotations
 import logging
 import math
 import os
+import sys
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
+
+# Ensure this file's own directory (the Vercel ``api/`` folder) is importable.
+# Vercel's serverless Python runtime does not always place the function's
+# directory on sys.path, which would make the sibling imports below fail with
+# ModuleNotFoundError and crash the whole function on every invocation.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 try:
-    import _env  # noqa: F401  (loads bank_simulator/.env into os.environ)
+    import _env  # noqa: F401  (loads a local .env into os.environ when present)
 except ImportError:
     pass
 import ai_verifier
