@@ -27,14 +27,6 @@ app = FastAPI(title="Bank of Baroda — Core Simulator", version="1.0.0")
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-@app.on_event("startup")
-def _startup() -> None:
-    """Create tables and seed the ten accounts in Neon Postgres on boot."""
-    try:
-        db.init_db()
-    except Exception as exc:
-        logger.error("Failed to initialize database on startup: %s", exc)
-
 # Cities TrustIQ can geo-locate (lat, lon) — used to compute travel distance.
 CITY_COORDS = {
     "Mumbai": (19.0760, 72.8777), "Delhi": (28.7041, 77.1025),
