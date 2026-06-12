@@ -8,7 +8,31 @@ import httpx
 
 logger = logging.getLogger("bob_sim.trust_client")
 
-TRUSTIQ_URL = os.environ.get("TRUSTIQ_URL", "https://trustiq-67h0.onrender.com").rstrip("/")
+# The live TrustIQ backend (FastAPI on Render). This is the only place that
+# serves /api/trust/evaluate.
+_DEFAULT_TRUSTIQ_URL = "https://trustiq-67h0.onrender.com"
+
+
+def _resolve_trustiq_url() -> str:
+    """Resolve the TrustIQ base URL, ignoring obviously-wrong values.
+
+    On Vercel a stray/old ``TRUSTIQ_URL`` env var can point at a Vercel
+    deployment (or the simulator's own domain). Those hosts don't serve
+    ``/api/trust/evaluate`` and answer with Vercel's NOT_FOUND/404 page, which
+    surfaces to the operator as ``TrustIQ error 404``. Guard against that by
+    falling back to the known-good Render backend whenever the configured URL
+    is empty or clearly not the TrustIQ backend.
+    """
+    raw = (os.environ.get("TRUSTIQ_URL") or "").strip().rstrip("/")
+    if not raw:
+        return _DEFAULT_TRUSTIQ_URL
+    # A vercel.app host is never the TrustIQ API — it's the simulator/front end.
+    if "vercel.app" in raw.lower():
+        return _DEFAULT_TRUSTIQ_URL
+    return raw
+
+
+TRUSTIQ_URL = _resolve_trustiq_url()
 TRUSTIQ_API_KEY = os.environ.get("TRUSTIQ_API_KEY", "bob-trustiq-live-key-2026")
 
 _EVALUATE_PATH = "/api/trust/evaluate"
