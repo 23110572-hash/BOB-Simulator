@@ -1,13 +1,3 @@
-"""Best-effort .env loader for local development.
-
-On Vercel (and any other hosting platform) environment variables are injected
-directly into ``os.environ``, so this module is a no-op there. It only loads a
-local ``.env`` file when running the simulator on a developer machine.
-
-It looks for a ``.env`` first next to this file (``api/.env``) and then one
-level up (``bank_simulator/.env``), so it works no matter where the process is
-started from. Existing environment variables are never overwritten.
-"""
 from __future__ import annotations
 
 import os
